@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+
+# Secrets
+.env
+
+
+# Data
+data/raw/**
+!data/raw/.gitkeep
