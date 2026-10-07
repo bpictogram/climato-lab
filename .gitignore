@@ -13,3 +13,6 @@ __pycache__/
 # Data
 data/raw/**
 !data/raw/.gitkeep
+
+# Dumps
+dump
