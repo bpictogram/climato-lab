@@ -15,4 +15,4 @@ data/raw/**
 !data/raw/.gitkeep
 
 # Dumps
-dump
+/dump/

@@ -23,7 +23,7 @@ CREATE TABLE spike.daily_wide_core (
     tm DOUBLE PRECISION,
     qtm SMALLINT,
     tntxm DOUBLE PRECISION,
-    qtntxm SMALLINT
+    qtntxm SMALLINT,
     PRIMARY KEY (station_id, obs_date)
 );
 
@@ -48,7 +48,7 @@ CREATE TABLE spike.daily_wide_rr_t_vent_all (
     tm DOUBLE PRECISION,
     qtm SMALLINT,
     tntxm DOUBLE PRECISION,
-    qtntxm SMALLINT
+    qtntxm SMALLINT,
     PRIMARY KEY (station_id, obs_date)
 )
 
@@ -58,6 +58,6 @@ CREATE TABLE spike.daily_long_all (
     param_id SMALLINT NOT NULL,
     value DOUBLE PRECISION NOT NULL,
     quality_code SMALLINT,
-    status_code SMALLINT
+    status_code SMALLINT,
     PRIMARY KEY (station_id, obs_date, param_id)
 );

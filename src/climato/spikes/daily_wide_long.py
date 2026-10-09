@@ -117,7 +117,14 @@ AUTRES_PARAMETRES_ALL_PARAMS = tuple(
 )
 
 METADATA_COLUMNS_AFTER_SCAN = ("NUM_POSTE", "NOM_USUEL", "obs_date", "source_file")  # "source" après le scan rename AAAAMMJJ -> obs_date et ajout source_file
+DAILY_PARAMS = tuple(dict.fromkeys(
+    (*RR_T_VENT_ALL_PARAMS, *AUTRES_PARAMETRES_ALL_PARAMS)
+))
 
+PARAM_IDS = {
+    param.lower(): param_id
+    for param_id, param in enumerate(DAILY_PARAMS)
+}
 
 """
 RR, QRR, TN, QTN...
@@ -603,7 +610,7 @@ def measure_signature_expr(
     )
 
 
-def drill_down_orphan_quality_pairs(lf: pl.LazyFrame, param: str, quality_code: int):
+def drill_down_orphan_quality_pairs(lf: pl.LazyFrame, param: str, quality_code_value: int):
     value_col = param.lower()
     quality_col = f"q{value_col}"
 
@@ -611,7 +618,7 @@ def drill_down_orphan_quality_pairs(lf: pl.LazyFrame, param: str, quality_code: 
         lf
         .filter(
             pl.col(value_col).is_null()
-            & (pl.col(quality_col) == quality_code)
+            & (pl.col(quality_col) == quality_code_value)
         )
         .select(
             "station_id",
@@ -630,6 +637,23 @@ def drill_down_orphan_quality_pairs(lf: pl.LazyFrame, param: str, quality_code: 
         .sort("station_id")
         .collect()
     )
+
+
+def replace_param_code_with_param_id(df: pl.DataFrame):
+    return (
+        df
+        .with_columns(
+            param_id=(
+                pl.col("param_code")
+                .replace_strict(
+                    PARAM_IDS,
+                    return_dtype=pl.UInt16,
+                )
+            ),
+        )
+        .drop("param_code")
+    )
+
 
 def main():
     lf_rtv_source = scan_daily_rr_t_vent()
