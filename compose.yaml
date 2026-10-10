@@ -22,8 +22,6 @@ services:
       target: runtime
     env_file:
       - .env
-    # volumes:
-    #   - ./data:/app/data:ro
     depends_on:
       postgres:
         condition: service_healthy

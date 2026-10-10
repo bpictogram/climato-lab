@@ -11,3 +11,4 @@ services:
     volumes:
       - ./src:/app/src:ro
       - ./data:/app/data:ro
+      - ./dump:/app/dump:ro      

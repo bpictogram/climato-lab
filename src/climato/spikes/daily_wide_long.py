@@ -1,9 +1,11 @@
 import csv
 from pathlib import Path
 import sys
+import os
 
 import polars as pl
 
+import climato.config as config
 from climato.config import get_daily_data_dir
 
 
@@ -653,6 +655,19 @@ def replace_param_code_with_param_id(df: pl.DataFrame):
         )
         .drop("param_code")
     )
+
+
+def get_dump_dir() -> Path:
+    configured_path = os.getenv("CLIMATO_DUMP_DIR")
+
+    if configured_path:
+        return Path(configured_path).expanduser().resolve()
+
+    return config.PROJECT_ROOT / "dump"
+
+
+DUMP_DIR = get_dump_dir()
+
 
 
 def main():
