@@ -2,6 +2,8 @@ import csv
 from pathlib import Path
 import sys
 import os
+import time
+import statistics 
 
 import polars as pl
 
@@ -668,6 +670,30 @@ def get_dump_dir() -> Path:
 
 DUMP_DIR = get_dump_dir()
 
+
+def benchmark(fn, warmups=2, repeats=7):
+    for _ in range(warmups):
+        result = fn()
+        _ = result.height
+        del result
+
+    times = []
+
+    for _ in range(repeats):
+        start = time.perf_counter()
+
+        result = fn()
+        _ = result.height
+
+        times.append(time.perf_counter() - start)
+        del result
+
+    return {
+        "median_s": statistics.median(times),
+        "min_s": min(times),
+        "max_s": max(times),
+        "runs_s": times,
+    }
 
 
 def main():
