@@ -10,5 +10,5 @@ services:
       target: dev
     volumes:
       - ./src:/app/src:ro
-      - ./data:/app/data:ro
+      - ./data:/app/data:rw
       - ./dump:/app/dump:ro      
