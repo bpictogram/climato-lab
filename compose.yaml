@@ -22,6 +22,8 @@ services:
       target: runtime
     env_file:
       - .env
+    environment:
+      TZ: Europe/Paris
     depends_on:
       postgres:
         condition: service_healthy
