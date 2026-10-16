@@ -5,6 +5,25 @@ MF_DAILY_RELATIVE_PATH = "meteo_france/daily"
 
 BASE_URL = "https://meteofrance.s3.sbg.io.cloud.ovh.net/data/synchro_ftp/BASE"
 
+
+DEPARTMENTS = tuple(str(i).zfill(2) for i in range(1, 96))
+
+PARAMETER_FAMILY_KEYS = (
+    "rr_t_vent",
+    "autres_parametres",
+)
+
+COLLECTION_KEYS = (
+    "quot",
+    "quot_comp",
+)
+
+PERIOD_KEYS = (
+    "before",
+    "previous",
+    "latest"
+)
+
 COLLECTIONS = {
     "quot": {
         "directory": "QUOT",
@@ -16,9 +35,6 @@ COLLECTIONS = {
     },
 }
 
-DEPARTMENTS = [str(i).zfill(2) for i in range(1, 96)]
-
-PERIODS = ("before", "previous", "latest")
 
 DATASET_YEAR = 2026
 
@@ -94,8 +110,14 @@ def build_candidate_resources_list(
             period,
             dataset_year,
         )
-        for department in departments
-        for parameter_family in parameter_families
-        for collection in collections
-        for period in periods
+        for department in DEPARTMENTS
+        for parameter_family in PARAMETER_FAMILY_KEYS
+        for collection in COLLECTION_KEYS
+        for period in PERIOD_KEYS
+        if all((
+            department in departments,
+            parameter_family in parameter_families,
+            collection in collections,
+            period in periods,
+        ))
     ]

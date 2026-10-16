@@ -7,7 +7,7 @@ import hashlib
 
 import climato.config as config
 from climato.utils.colors import Color
-from climato.utils.datetime import utc_now_iso
+from climato.utils.datetime import utc_now_micro
 from climato.sources.meteo_france.daily import (
     COLLECTIONS,
     DEPARTMENTS,
@@ -31,8 +31,8 @@ DOWNLOAD_REPORT_PATH = DOWNLOAD_REPORT_DIR / f"download_{run_timestamp}.jsonl"
 
 # Pour test sur périmètre restreint
 # COLLECTIONS = {k: v for k, v in COLLECTIONS.items() if k == "quot"}
-COLLECTIONS = {k: v for k, v in COLLECTIONS.items()}
-DEPARTMENTS = ["01", "02", "03"]
+# COLLECTIONS = {k: v for k, v in COLLECTIONS.items()}
+# DEPARTMENTS = ["01", "02", "03"]
 
 
 def build_period_config() -> dict:
@@ -60,7 +60,7 @@ def build_period_choices():
 PERIOD_CHOICES = build_period_choices()
 
 # PARAMETER_FAMILIES = {k: v for k, v in PARAMETER_FAMILIES.items() if k == "rr_t_vent"}
-PARAMETER_FAMILIES = {k: v for k, v in PARAMETER_FAMILIES.items()}
+# PARAMETER_FAMILIES = {k: v for k, v in PARAMETER_FAMILIES.items()}
 
 
 # def build_url(
@@ -191,6 +191,7 @@ def download(resource: dict, report_path: Path) -> dict:
         "status": None,
         "http_status": None,
         "size_bytes": None,
+        "attempted_at": None,
         "checked_at": None,
         "downloaded_at": None,
         "etag": None,
@@ -202,16 +203,18 @@ def download(resource: dict, report_path: Path) -> dict:
     sha256 = hashlib.sha256()
 
     try:
+        report_line["attempted_at"] = utc_now_micro()
+
         with requests.get(
             url,
             stream=True,
             timeout=(5, 60)
         ) as response:
-            checked_at = utc_now_iso()
+            checked_at = utc_now_micro()
+            report_line["checked_at"] = checked_at
             
             if response.status_code == 404:
                 report_line.update({
-                    "checked_at": checked_at,
                     "status": "not_found",
                     "http_status": response.status_code,
                 })
@@ -221,10 +224,7 @@ def download(resource: dict, report_path: Path) -> dict:
 
                 return report_line
 
-            report_line.update({
-                "checked_at": checked_at,
-                "http_status": response.status_code,                
-            })
+            report_line["http_status"] = response.status_code
             
             response.raise_for_status()
 
@@ -244,7 +244,7 @@ def download(resource: dict, report_path: Path) -> dict:
         # If success
         tmp_path.replace(dest_path)
 
-        downloaded_at = utc_now_iso()
+        downloaded_at = utc_now_micro()
         etag = response.headers.get("ETag")
         last_modified = response.headers.get("Last-Modified")
 
@@ -260,9 +260,7 @@ def download(resource: dict, report_path: Path) -> dict:
         report_line.update({
             "raw_relative_path": raw_relative_path_str,
             "status": "success",
-            "http_status": response.status_code,
             "size_bytes": size_bytes,
-            "checked_at": checked_at,
             "downloaded_at": downloaded_at,
             "etag": etag,
             "source_last_modified_at": last_modified_iso if last_modified else None,
@@ -453,6 +451,13 @@ def main():
         PARAMETER_FAMILIES,
         COLLECTIONS,
         period_keys,
+    )
+
+    ts_log = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    n_resources = len(resources)
+    
+    print(
+        f"{Color.BRIGHT_MAGENTA}{ts_log} | {n_resources} candidate resources{Color.RESET}"
     )
 
     for resource in resources:
