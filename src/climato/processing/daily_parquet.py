@@ -1,5 +1,7 @@
 import csv
+from datetime import date
 import gzip
+import json
 from pathlib import Path
 import sys
 import time
@@ -30,7 +32,7 @@ METADATA_COLS_DTYPES = [
     ("AAAAMMJJ", pl.String),
 ]
 
-PARAMETER_COLS_DTYPES_RTV = [
+PARAMETER_COLS_DTYPES_RTV_SOURCE = [
     ("RR", pl.Float64),
     ("TN", pl.Float64),
     ("HTN", pl.UInt16),
@@ -41,7 +43,7 @@ PARAMETER_COLS_DTYPES_RTV = [
     ("TAMPLI", pl.Float64),
     ("TNSOL", pl.Float64),
     ("TN50", pl.Float64),
-    ("DG", pl.UInt16),
+    ("DG", pl.Int16),  # cases of negative values => UInt16 -> Int16, then replace negative values with null 
     ("FFM", pl.Float64),
     ("FF2M", pl.Float64),
     ("FXY", pl.Float64),
@@ -59,6 +61,11 @@ PARAMETER_COLS_DTYPES_RTV = [
     ("DRR", pl.UInt16),
 ]
 
+PARAMETER_COLS_DTYPES_RTV_TARGET = [
+    (col.lower(), dtype) if col != "DG"
+    else ("dg", pl.UInt16)
+    for col, dtype in PARAMETER_COLS_DTYPES_RTV_SOURCE    
+]
 
 OPTIONAL_COLS_DTYPES_RTV = [
     ("STATUS_FXI3S", pl.UInt8),
@@ -66,14 +73,14 @@ OPTIONAL_COLS_DTYPES_RTV = [
 ]
 
 
-PARAMETER_COLS_RTV: tuple[str] = tuple(
-    param
-    for param, _ in PARAMETER_COLS_DTYPES_RTV
-)
+# PARAMETER_COLS_RTV: tuple[str] = tuple(
+#     param
+#     for param, _ in PARAMETER_COLS_DTYPES_RTV
+# )
 
 OPTIONAL_COLS_RTV = ("STATUS_DXI3S", "STATUS_FXI3S")
 
-PARAMETER_COLS_DTYPES_AP = [
+PARAMETER_COLS_DTYPES_AP_SOURCE = [
     ("DHUMEC", pl.UInt16),
     ("PMERM", pl.Float64),
     ("PMERMIN", pl.Float64),
@@ -117,6 +124,12 @@ PARAMETER_COLS_DTYPES_AP = [
     ("TMERMAX", pl.Float64),
 ]
 
+PARAMETER_COLS_DTYPES_AP_TARGET = [
+    (col.lower(), dtype)
+    for col, dtype in PARAMETER_COLS_DTYPES_AP_SOURCE    
+]
+
+
 
 def build_source_schema(
         metadata: Iterable[tuple[str, pl.DataType]],
@@ -139,20 +152,22 @@ FAMILY_SPECS = {
     "rr_t_vent": {
         "source_schema": build_source_schema(
             METADATA_COLS_DTYPES,
-            PARAMETER_COLS_DTYPES_RTV,
+            PARAMETER_COLS_DTYPES_RTV_SOURCE,
             OPTIONAL_COLS_DTYPES_RTV,
         ),
-        "parameters": PARAMETER_COLS_DTYPES_RTV,
+        "parameters_source": PARAMETER_COLS_DTYPES_RTV_SOURCE,
+        "parameters_target": PARAMETER_COLS_DTYPES_RTV_TARGET,
         "optional": OPTIONAL_COLS_DTYPES_RTV,
         "optional_cols": OPTIONAL_COLS_RTV,
     },
     "autres_parametres": {
         "source_schema": build_source_schema(
             METADATA_COLS_DTYPES,
-            PARAMETER_COLS_DTYPES_AP,
+            PARAMETER_COLS_DTYPES_AP_SOURCE,
             None,
         ),
-        "parameters": PARAMETER_COLS_DTYPES_AP,
+        "parameters_source": PARAMETER_COLS_DTYPES_AP_SOURCE,
+        "parameters_target": PARAMETER_COLS_DTYPES_AP_TARGET,
         "optional": (),
         "optional_cols": (),
     }
@@ -171,7 +186,7 @@ def build_target_schema(
         "obs_date": pl.Date,
     }
 
-    for parameter, dtype in spec["parameters"]:
+    for parameter, dtype in spec["parameters_target"]:
         schema[parameter.lower()] = dtype
         schema[f"q{parameter.lower()}"] = pl.UInt8
 
@@ -192,7 +207,7 @@ for family in daily.PARAMETER_FAMILIES:
     FAMILY_SPECS[family]["target_schema"] = build_target_schema(FAMILY_SPECS[family])
     required = (
         [column for column, _ in METADATA_COLS_DTYPES]
-         + build_param_and_quality_columns(FAMILY_SPECS[family]["parameters"])
+         + build_param_and_quality_columns(FAMILY_SPECS[family]["parameters_source"])
     )
     FAMILY_SPECS[family]["required_cols"] = required
     FAMILY_SPECS[family]["expected_cols"] = (
@@ -298,16 +313,62 @@ def scan_daily_file(
         )
     )
 
+"""
+Applying corrections to invalid values that appeared during the conversion to Parquet
+"""
+def apply_corrections(
+        lf_source: pl.LazyFrame,
+        parameter_family: str,
+) -> pl.LazyFrame:
+    if parameter_family == "autres_parametres":
+        return lf_source
+    
+    return (
+        lf_source
+        .with_columns(
+            pl.when(pl.col("DG") < 0)
+            .then(None)
+            .otherwise(pl.col("DG"))
+            .cast(pl.UInt16)
+            .alias("DG")
+        )
+    )
+
+
+class InvalidSourceValueError(Exception):
+    def __init__(self, message, print_message):
+        self.message = message
+        self.print_message = print_message
+
+    def __str__(self):
+        return self.print_message
+
 
 def build_daily_wide(
         lf_source: pl.LazyFrame,
         spec: dict,
+        parameter_family: str,
 ) -> pl.LazyFrame:
-    return (
+    lf_source = (
         lf_source
         .with_columns(pl.col("AAAAMMJJ").str.to_date(format="%Y%m%d"))
+    )
+
+    lf_source = apply_corrections(lf_source, parameter_family)
+    
+    return (
+        lf_source
+        # .with_columns(pl.col("AAAAMMJJ").str.to_date(format="%Y%m%d"))
+        # # Temporary solution for cases of negative DG values
+        # .with_columns(
+        #     pl.when(pl.col("DG") < 0)
+        #     .then(None)
+        #     .otherwise(pl.col("DG"))
+        #     .cast(pl.UInt16)
+        #     .alias("DG")
+        # )
         .rename(
-            build_column_rename(spec["parameters"], spec["optional"]),
+            build_column_rename(spec["parameters_source"], spec["optional"]),
         )
     )
 
@@ -340,7 +401,27 @@ def process_resource(
 
     lf_source = scan_daily_file(source_path, spec["source_schema"])
 
-    lf_wide = build_daily_wide(lf_source, spec)
+    # Temporary solution for cases where DG takes on negative values
+    if parameter_family == "rr_t_vent":
+        invalid_dg = (
+            lf_source
+            .filter(pl.col("DG") < 0)
+            .select(
+                "NUM_POSTE",
+                "NOM_USUEL",
+                "AAAAMMJJ",
+                "DG",
+            )
+            .collect()
+        )
+
+        if invalid_dg.height:
+            print(f"{Color.RED}{invalid_dg}{Color.RESET}")
+            print(f"""\n{Color.BRIGHT_RED}{invalid_dg.height} invalid DG value(s) """
+                f"""for file {resource["source_filename"]} (see above)\n{Color.RESET}""")
+
+
+    lf_wide = build_daily_wide(lf_source, spec, parameter_family)
     
     parquet_path = build_processed_path(processed_root, resource)
 
@@ -373,13 +454,43 @@ def process_resource(
         )
         .collect()
     )
-    # first_rows = (
+
+
+    # rows = (
     #     lf_anal
-    #     .head(10)
-    #     .collect()
+    #     .filter(
+    #         pl.col("station_id") == "21527001",
+    #         pl.col("obs_date").is_between(date(2015, 2, 25), date(2015, 3, 15)),
+    #     )
+    #     .select(
+    #         "station_id",
+    #         "station_name",
+    #         "obs_date",
+    #         "tn",
+    #         "tx",
+    #         "dg",
+    #     )
+    #     # .collect()
     # )
 
     print(f"{Color.GREEN}OK. {Color.YELLOW}{n_rows.item()} rows in Parquet file{Color.RESET}")
+    if parameter_family == "rr_t_vent":
+        if invalid_dg.height:
+            raise InvalidSourceValueError(
+                print_message=(
+                    f"{Color.RED}{json.dumps(invalid_dg.rows(named=True), indent=4)}\n{Color.RESET}"
+                    f"""{Color.BRIGHT_RED}{invalid_dg.height} invalid DG value(s) """
+                    f"""for file {resource["source_filename"]} (see above){Color.RESET}"""
+                ),
+                message=(
+                    f"""{invalid_dg.height} invalid DG value(s) """
+                    f"""for file {resource["source_filename"]}. """
+                    f"""Row(s) as JSON: {json.dumps(invalid_dg.rows(named=True))}"""
+                ),
+            )
+
+    # with pl.Config(tbl_rows=19):
+    #     print(rows)
     # print(first_rows)
 
 
@@ -387,11 +498,13 @@ def main():
     start = time.perf_counter()
     manifest = pl.read_parquet(MANIFEST_PATH).filter(pl.col("integrity_status") == "ok")
     failures = {}
+    corrections = {}
     processed_count = 0
+    corrected_count = 0
 
     # for resource in manifest.iter_rows(named=True):
     for i, resource in enumerate(manifest.iter_rows(named=True)):
-        # if i >= 30:
+        # if i != 180 and i != 569:
         #     continue
         
         print(f"{Color.BRIGHT_MAGENTA}\nResource {i+1}/{manifest.height} ({time.perf_counter() - start:.3f} s){Color.RESET}")
@@ -402,6 +515,14 @@ def main():
                 processed_root=PROCESSED_DAILY_DIR,
             )
             processed_count += 1
+        except InvalidSourceValueError as e:
+            print(f"{e.print_message}")
+            corrections[resource["source_filename"]] = {
+                "resource_order": i,
+                "exception": e,
+            }
+            processed_count += 1
+            corrected_count += 1
         except Exception as e:
             print(f"{Color.RED}{e}{Color.RESET}")
             failures[resource["source_filename"]] = {
@@ -409,14 +530,21 @@ def main():
                 "exception": str(e),
             }
 
+    if corrections:
+        print("\nCorrections were applied:\n")
+        for k, v in corrections.items():
+            print(f"{Color.YELLOW}{k}{Color.RESET}")
+            print(f"""{v["exception"].print_message}\n""")
+        print(f"\n{Color.YELLOW}Corrections were applied (see above).{Color.RESET}")
+
     if failures:
-        print()
+        print("\nFailures occurred:\n")
         pprint_dict(failures)
         print(f"{Color.RED}Exceptions occurred (see above).{Color.RESET}")
 
     print()
     print(f"{Color.BRIGHT_MAGENTA}Ended in {time.perf_counter() - start:.3f} s{Color.RESET}")
-    print(f"\nProcessed: {processed_count}")
+    print(f"\nProcessed: {processed_count} (of which {len(corrections)} corrections)")
     print(f"Failures: {len(failures)}")
 
 
