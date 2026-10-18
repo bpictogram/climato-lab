@@ -148,6 +148,59 @@ def build_source_schema(
     return dict(fields)
 
 
+def find_rtv_corrections(
+        lf_source: pl.LazyFrame,
+) -> pl.DataFrame:
+    return (
+        lf_source
+        .filter(pl.col("DG") < 0)
+        .select(
+            "NUM_POSTE",
+            "NOM_USUEL",
+            "AAAAMMJJ",
+            "DG",
+        )
+        .collect()
+    )
+
+
+def apply_rtv_corrections(
+        lf_source: pl.LazyFrame,
+) -> pl.LazyFrame:
+    return (
+        lf_source
+        .with_columns(
+            pl.when(pl.col("DG") < 0)
+            .then(None)
+            .otherwise(pl.col("DG"))
+            .cast(pl.UInt16)
+            .alias("DG")
+        )
+    )
+
+
+def print_dg_corrections(filename, invalid_rows_df):
+    print(f"{Color.BRIGHT_MAGENTA}--> Filename: {filename}{Color.RESET}")
+    print(
+        f"{Color.RED}Invalid value(s):\n{json.dumps(invalid_rows_df.rows(named=True), indent=4)}\n{Color.RESET}"
+        f"""{Color.BRIGHT_RED}{invalid_rows_df.height} invalid DG value(s) """
+        f"""for file {filename} (see above){Color.RESET}\n"""
+        f"{Color.BRIGHT_GREEN}-> Correction: value(s) replaced by null\n{Color.RESET}"
+    )
+
+
+def find_no_corrections(
+        lf_source: pl.LazyFrame,
+) -> pl.DataFrame:
+    return pl.DataFrame()
+
+
+def apply_no_corrections(
+        lf_source: pl.LazyFrame,
+) -> pl.LazyFrame:
+    return lf_source
+
+
 FAMILY_SPECS = {
     "rr_t_vent": {
         "source_schema": build_source_schema(
@@ -159,6 +212,8 @@ FAMILY_SPECS = {
         "parameters_target": PARAMETER_COLS_DTYPES_RTV_TARGET,
         "optional": OPTIONAL_COLS_DTYPES_RTV,
         "optional_cols": OPTIONAL_COLS_RTV,
+        "find_corrections": find_rtv_corrections,
+        "apply_corrections": apply_rtv_corrections,
     },
     "autres_parametres": {
         "source_schema": build_source_schema(
@@ -170,7 +225,9 @@ FAMILY_SPECS = {
         "parameters_target": PARAMETER_COLS_DTYPES_AP_TARGET,
         "optional": (),
         "optional_cols": (),
-    }
+        "find_corrections": find_no_corrections,
+        "apply_corrections": apply_no_corrections,
+    },
 }
 
 
@@ -268,7 +325,7 @@ def validate_header(
 
         raise ValueError(
             f"Header invalid\n"
-            + f"Missing: {missing}" if missing else ""
+            + (f"Missing: {missing}" if missing else "")
             + f"Actual: {actual_required}\n"
             f"""Required: {spec["required_cols"]}"""
         )
@@ -313,35 +370,26 @@ def scan_daily_file(
         )
     )
 
-"""
-Applying corrections to invalid values that appeared during the conversion to Parquet
-"""
-def apply_corrections(
-        lf_source: pl.LazyFrame,
-        parameter_family: str,
-) -> pl.LazyFrame:
-    if parameter_family == "autres_parametres":
-        return lf_source
+# """
+# Applying corrections to invalid values that appeared during the conversion to Parquet
+# """
+# def apply_corrections(
+#         lf_source: pl.LazyFrame,
+#         parameter_family: str,
+# ) -> pl.LazyFrame:
+#     if parameter_family == "autres_parametres":
+#         return lf_source
     
-    return (
-        lf_source
-        .with_columns(
-            pl.when(pl.col("DG") < 0)
-            .then(None)
-            .otherwise(pl.col("DG"))
-            .cast(pl.UInt16)
-            .alias("DG")
-        )
-    )
-
-
-class InvalidSourceValueError(Exception):
-    def __init__(self, message, print_message):
-        self.message = message
-        self.print_message = print_message
-
-    def __str__(self):
-        return self.print_message
+#     return (
+#         lf_source
+#         .with_columns(
+#             pl.when(pl.col("DG") < 0)
+#             .then(None)
+#             .otherwise(pl.col("DG"))
+#             .cast(pl.UInt16)
+#             .alias("DG")
+#         )
+#     )
 
 
 def build_daily_wide(
@@ -349,24 +397,9 @@ def build_daily_wide(
         spec: dict,
         parameter_family: str,
 ) -> pl.LazyFrame:
-    lf_source = (
-        lf_source
-        .with_columns(pl.col("AAAAMMJJ").str.to_date(format="%Y%m%d"))
-    )
-
-    lf_source = apply_corrections(lf_source, parameter_family)
-    
     return (
         lf_source
-        # .with_columns(pl.col("AAAAMMJJ").str.to_date(format="%Y%m%d"))
-        # # Temporary solution for cases of negative DG values
-        # .with_columns(
-        #     pl.when(pl.col("DG") < 0)
-        #     .then(None)
-        #     .otherwise(pl.col("DG"))
-        #     .cast(pl.UInt16)
-        #     .alias("DG")
-        # )
+        .with_columns(pl.col("AAAAMMJJ").str.to_date(format="%Y%m%d"))
         .rename(
             build_column_rename(spec["parameters_source"], spec["optional"]),
         )
@@ -401,25 +434,11 @@ def process_resource(
 
     lf_source = scan_daily_file(source_path, spec["source_schema"])
 
-    # Temporary solution for cases where DG takes on negative values
-    if parameter_family == "rr_t_vent":
-        invalid_dg = (
-            lf_source
-            .filter(pl.col("DG") < 0)
-            .select(
-                "NUM_POSTE",
-                "NOM_USUEL",
-                "AAAAMMJJ",
-                "DG",
-            )
-            .collect()
-        )
+    corrections = spec["find_corrections"](lf_source)
+    lf_source = spec["apply_corrections"](lf_source)
 
-        if invalid_dg.height:
-            print(f"{Color.RED}{invalid_dg}{Color.RESET}")
-            print(f"""\n{Color.BRIGHT_RED}{invalid_dg.height} invalid DG value(s) """
-                f"""for file {resource["source_filename"]} (see above)\n{Color.RESET}""")
-
+    if corrections.height:
+        print_dg_corrections(resource["source_filename"], corrections)
 
     lf_wide = build_daily_wide(lf_source, spec, parameter_family)
     
@@ -473,25 +492,27 @@ def process_resource(
     #     # .collect()
     # )
 
-    print(f"{Color.GREEN}OK. {Color.YELLOW}{n_rows.item()} rows in Parquet file{Color.RESET}")
-    if parameter_family == "rr_t_vent":
-        if invalid_dg.height:
-            raise InvalidSourceValueError(
-                print_message=(
-                    f"{Color.RED}{json.dumps(invalid_dg.rows(named=True), indent=4)}\n{Color.RESET}"
-                    f"""{Color.BRIGHT_RED}{invalid_dg.height} invalid DG value(s) """
-                    f"""for file {resource["source_filename"]} (see above){Color.RESET}"""
-                ),
-                message=(
-                    f"""{invalid_dg.height} invalid DG value(s) """
-                    f"""for file {resource["source_filename"]}. """
-                    f"""Row(s) as JSON: {json.dumps(invalid_dg.rows(named=True))}"""
-                ),
-            )
+    print(f"{Color.GREEN}OK. {Color.YELLOW}{n_rows.item()} rows written to Parquet file{Color.RESET}")
+    # if parameter_family == "rr_t_vent":
+    #     if invalid_dg.height:
+    #         raise InvalidSourceValueError(
+    #             print_message=(
+    #                 f"{Color.RED}{json.dumps(invalid_dg.rows(named=True), indent=4)}\n{Color.RESET}"
+    #                 f"""{Color.BRIGHT_RED}{invalid_dg.height} invalid DG value(s) """
+    #                 f"""for file {resource["source_filename"]} (see above){Color.RESET}"""
+    #             ),
+    #             message=(
+    #                 f"""{invalid_dg.height} invalid DG value(s) """
+    #                 f"""for file {resource["source_filename"]}. """
+    #                 f"""Row(s) as JSON: {json.dumps(invalid_dg.rows(named=True))}"""
+    #             ),
+    #         )
 
     # with pl.Config(tbl_rows=19):
     #     print(rows)
     # print(first_rows)
+
+    return corrections
 
 
 def main():
@@ -509,20 +530,26 @@ def main():
         
         print(f"{Color.BRIGHT_MAGENTA}\nResource {i+1}/{manifest.height} ({time.perf_counter() - start:.3f} s){Color.RESET}")
         try:
-            process_resource(
+            resource_corrections = process_resource(
                 resource,
                 raw_root=RAW_DATA_DIR,
                 processed_root=PROCESSED_DAILY_DIR,
             )
             processed_count += 1
-        except InvalidSourceValueError as e:
-            print(f"{e.print_message}")
-            corrections[resource["source_filename"]] = {
-                "resource_order": i,
-                "exception": e,
-            }
-            processed_count += 1
-            corrected_count += 1
+
+            if resource_corrections.height:
+                corrections[resource["source_filename"]] = (
+                    resource_corrections
+                )
+
+        # except InvalidSourceValueError as e:
+        #     print(f"{e.print_message}")
+        #     corrections[resource["source_filename"]] = {
+        #         "resource_order": i,
+        #         "exception": e,
+        #     }
+        #     processed_count += 1
+        #     corrected_count += 1
         except Exception as e:
             print(f"{Color.RED}{e}{Color.RESET}")
             failures[resource["source_filename"]] = {
@@ -530,11 +557,19 @@ def main():
                 "exception": str(e),
             }
 
+    end_message = "End of run"
+    end_chars = "=" * len(end_message)
+
+    print()
+    print(f"{Color.BRIGHT_MAGENTA}{end_chars}{Color.RESET}")
+    print(f"{Color.BRIGHT_MAGENTA}{end_message}{Color.RESET}")
+    print(f"{Color.BRIGHT_MAGENTA}{end_chars}{Color.RESET}")
+    print()
+
     if corrections:
-        print("\nCorrections were applied:\n")
-        for k, v in corrections.items():
-            print(f"{Color.YELLOW}{k}{Color.RESET}")
-            print(f"""{v["exception"].print_message}\n""")
+        print(f"{Color.YELLOW}\nCorrections were applied:\n{Color.RESET}")
+        for filename, invalid_rows_df in corrections.items():
+            print_dg_corrections(filename, invalid_rows_df)
         print(f"\n{Color.YELLOW}Corrections were applied (see above).{Color.RESET}")
 
     if failures:
@@ -544,7 +579,7 @@ def main():
 
     print()
     print(f"{Color.BRIGHT_MAGENTA}Ended in {time.perf_counter() - start:.3f} s{Color.RESET}")
-    print(f"\nProcessed: {processed_count} (of which {len(corrections)} corrections)")
+    print(f"\nProcessed: {processed_count} (of which {len(corrections)} corrected files)")
     print(f"Failures: {len(failures)}")
 
 
